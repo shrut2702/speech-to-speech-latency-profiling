@@ -73,7 +73,7 @@ class TrialMetrics:
 
     response_audio_s: float | None = None
     rtf: float | None = None                # synthesis wall time / audio produced
-    max_gap_ms: float | None = None         # worst inter-chunk gap
+    max_gap_ms: float | None = None         # worst silence in playback
     underruns: int | None = None            # gaps that would be audible
 
     feeder_max_lag_ms: float | None = None
@@ -149,17 +149,22 @@ def trial_metrics(trace: Trace, underrun_gap_ms: float = 50.0) -> TrialMetrics:
         # the denominator while its synthesis time is not in the numerator, and
         # on the batch path there is only one chunk, so the span collapses to
         # zero and every run reports rtf 0.
+        t_first = chunks[0].t
         t_end = trace.first(OUTPUT_END) or chunks[-1].t
         t_start = trace.first(TTS_START) or chunks[0].t
         if produced > 0:
             m.rtf = (t_end - t_start) / produced
 
-        # Gaps between consecutive chunks arriving. A gap longer than the audio
-        # already buffered is what the listener hears as a stutter.
-        gaps = [
-            (b.t - a.t) * MS - a.meta.get("duration_s", 0.0) * MS
-            for a, b in zip(chunks, chunks[1:])
-        ]
+        # Played back in order, starting when the first chunk lands. The
+        # playhead carries the buffer forward: a chunk that arrives early
+        # covers for one that arrives late, which is what a listener actually
+        # hears. Comparing each pair on its own instead would count a gap even
+        # when several seconds were still queued up.
+        playhead = t_first
+        gaps = []
+        for c in chunks:
+            gaps.append((c.t - playhead) * MS)
+            playhead = max(playhead, c.t) + c.meta.get("duration_s", 0.0)
         if gaps:
             m.max_gap_ms = max(gaps)
             m.underruns = sum(1 for g in gaps if g > underrun_gap_ms)
