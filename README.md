@@ -22,13 +22,45 @@ Behind them: faster-whisper `large-v3-turbo` for batch ASR, [whisper-streaming](
 
 A flow-matching TTS would make a second column here, and the asymmetry is the reason to want one: an autoregressive codec LM emits acoustic tokens as it goes, so audio starts mid-chunk, while a flow matching model solves the whole chunk at once and cannot start early at all. F5-TTS is in `bench/stages.py` but has no config and has never run. Adding it back is one config file plus the install.
 
-## Three processes, three GPUs
+## Results
 
-Each stage gets its own process and its own card. Python threads share one interpreter lock, so in a single process the LLM and the TTS would take turns instead of running together, and overlapping them is the entire point of the streaming paths. Profiling CosyVoice2 measured that cost directly: its own LM went from 15.6 to 23.6 ms per token with a decoder thread alive beside it.
+45 clips, 4 trials each, A100-40GB per stage. Milliseconds from the end of
+speech, p50 / p95.
 
-Every config uses the same three processes, including `batch` where nothing overlaps. If `batch` ran in one process and `stream_gen` did not, the gap between them would include the process boundary instead of just the overlap.
+| | batch | stream_gen | stream_all |
+|---|---|---|---|
+| time to first audio | 11892 / 17454 | **2717 / 3715** | 2947 / 4298 |
+| end to end | 11893 / 17456 | 12915 / 22058 | 13592 / 22700 |
+| asr final | 129 / 167 | 110 / 161 | **4** / 672 |
+| llm first token | 157 / 198 | 136 / 187 | 31 / 702 |
 
-A worker sets `CUDA_VISIBLE_DEVICES` before torch is imported, so it sees one card and calls it `cuda:0`. The TTS worker also runs under its own venv, because CosyVoice needs numpy 1 and vLLM needs numpy 2. Placement is recorded in every trace, so a one-GPU run and a three-GPU run cannot be compared by accident.
+Stage costs on their own clock, with everything before them subtracted out:
+
+| | batch | stream_gen | stream_all |
+|---|---|---|---|
+| asr total | 127 / 164 | 108 / 158 | 4112 / 9384 |
+| llm time to first token | 27 / 34 | 24 / 29 | 26 / 34 |
+| llm second token | 7 / 8 | 7 / 8 | 7 / 8 |
+| llm total | 443 / 739 | 440 / 736 | 431 / 717 |
+| tts time to first audio | 11226 / 16758 | 2499 / 3490 | 2802 / 4056 |
+
+**Overlapping the LLM and the TTS is worth 4.4x.** Batch makes you wait for the
+whole reply to be synthesized before you hear any of it, so time to first audio
+is the length of the answer. Streaming makes you wait for eight words. The p95
+falls from 17.5s to 3.7s, and it stops tracking response length: batch runs
+13.8s, 16.4s, 20.3s across the short, medium and long buckets, while stream_gen
+runs 3.3s, 3.5s, 4.2s.
+
+**Transcribing during speech is worth 106ms and costs more than that.** ASR
+finalize drops from 110ms to 4ms at p50, which is the whole point of
+`stream_all` and is real. It is also invisible next to 2.7 seconds of TTS. Time
+to first audio comes out slightly worse, 2947 against 2717, partly because
+whisper-streaming produces a different transcript.
+
+Per-config detail, including real time factor, gaps and underruns, is in
+`results/<config>/report.md`, regenerated from the traces by
+`scripts/report.py`.
+
 
 ## Clips
 
@@ -61,8 +93,6 @@ It is trimmed. The original carried 1.18s of leading and 1.02s of trailing silen
 Percentiles only, p50 and p95. Means hide the tail, and the tail is what a user notices.
 
 Everything is timed against two clocks. **From the endpoint** is what the user sits through, and it accumulates every stage before it: time to first audio, end to end, final transcript, first LLM token, first synthesized chunk. **From each stage's own start** is what that stage costs on its own, which is the view that says which millisecond to go delete: ASR first partial and total, LLM time to first token, second token and total, TTS time to first audio and total.
-
-Alongside those: real time factor, inter-chunk gaps, and underruns.
 
 Two gates run automatically. The report fails if the LLM produced different response lengths across configs, since then the configs did different amounts of work. And any trial where the feeder fell more than 50ms behind schedule is thrown out, because it describes a loaded host rather than a pipeline.
 
