@@ -1,3 +1,11 @@
+!! response length varied, latencies are not comparable:
+   gsm8k_0254: response length varied across trials/configs [62, 63]
+   gsm8k_0274: response length varied across trials/configs [63, 77]
+   gsm8k_0315: response length varied across trials/configs [89, 95]
+   gsm8k_0450: response length varied across trials/configs [82, 94]
+   llamaq_0175: response length varied across trials/configs [28, 29]
+
+
 ## Pipeline, from end of speech
 
 | config | n | time to first audio p50/p95 | end to end p50/p95 | asr final p50/p95 | llm first token p50/p95 | tts first chunk p50/p95 |
@@ -22,4 +30,4 @@ Stage costs with everything before them subtracted out. This is the view that sa
 
 | config | rtf p95 | max gap p95 ms | underruns | failed trials |
 |---|---|---|---|---|
-| cascade_batch_cosyvoice2 | 1.03 | nan | 0 | 0 |
+| cascade_batch_cosyvoice2 | 1.03 | 0 | 0 | 0 |
