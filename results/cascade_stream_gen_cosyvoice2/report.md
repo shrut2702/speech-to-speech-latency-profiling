@@ -1,9 +1,3 @@
-!! response length varied, latencies are not comparable:
-   gsm8k_0274: response length varied across trials/configs [63, 77]
-   gsm8k_0315: response length varied across trials/configs [89, 95]
-   gsm8k_0450: response length varied across trials/configs [82, 94]
-
-
 ## Pipeline, from end of speech
 
 | config | n | time to first audio p50/p95 | end to end p50/p95 | asr final p50/p95 | llm first token p50/p95 | tts first chunk p50/p95 |
