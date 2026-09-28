@@ -32,9 +32,6 @@ ALL_CONFIGS = [
     "cascade_batch_cosyvoice2",
     "cascade_stream_gen_cosyvoice2",
     "cascade_stream_all_cosyvoice2",
-    "cascade_batch_f5",
-    "cascade_stream_gen_f5",
-    "cascade_stream_all_f5",
     "moshi",
 ]
 

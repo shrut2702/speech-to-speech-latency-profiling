@@ -20,5 +20,4 @@ modelscope
 #   ufal/whisper_streaming       the stream_all ASR policy
 #
 # Not wired up yet:
-#   f5-tts
 #   moshi

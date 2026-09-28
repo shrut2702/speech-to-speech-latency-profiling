@@ -4,29 +4,23 @@ Measures where the milliseconds go between a person finishing their sentence and
 
 Audio is fed at wall clock pace in 20ms frames, the way a microphone delivers it. `t = 0` is the annotated end of speech carried in the manifest, so it is a property of the audio file rather than of any system, and it is identical across configs and runs. A production deployment adds 200 to 700ms of endpointing on top of every number here.
 
-Status: the cascade runs on Modal. F5-TTS and Moshi are not wired up yet.
+Status: all three cascade configs have run on Modal. Moshi is not wired up yet.
 
 ## Configs
 
 Three cascade paths, differing in how much of the work overlaps:
 
-| path | ASR | LLM and TTS |
+| config | ASR | LLM and TTS |
 |---|---|---|
-| `batch` | waits for the whole utterance | one after the other |
-| `stream_gen` | waits for the whole utterance | LLM streams, TTS starts on chunk one |
-| `stream_all` | transcribes during speech | LLM streams, TTS starts on chunk one |
-
-Crossed with two TTS families, which is where the interesting asymmetry lives. An autoregressive codec LM can emit acoustic tokens as it goes. A flow matching model cannot start early at all, so "streaming" for it means chunking the text and calling it repeatedly.
-
-|  | CosyVoice2 (autoregressive) | F5-TTS (flow matching) |
-|---|---|---|
-| `batch` | `cascade_batch_cosyvoice2` | `cascade_batch_f5` |
-| `stream_gen` | `cascade_stream_gen_cosyvoice2` | `cascade_stream_gen_f5` |
-| `stream_all` | `cascade_stream_all_cosyvoice2` | `cascade_stream_all_f5` |
+| `cascade_batch_cosyvoice2` | waits for the whole utterance | one after the other |
+| `cascade_stream_gen_cosyvoice2` | waits for the whole utterance | LLM streams, TTS starts on chunk one |
+| `cascade_stream_all_cosyvoice2` | transcribes during speech | LLM streams, TTS starts on chunk one |
 
 Plus `moshi`, one model doing the whole job.
 
-Behind them: faster-whisper `large-v3-turbo` for batch ASR, [whisper-streaming](https://github.com/ufal/whisper_streaming) over the same weights for `stream_all`, Qwen3-4B-Instruct on vLLM at temperature 0, and CosyVoice2-0.5B or F5-TTS.
+Behind them: faster-whisper `large-v3-turbo` for batch ASR, [whisper-streaming](https://github.com/ufal/whisper_streaming) over the same weights for `stream_all`, Qwen3-4B-Instruct on vLLM at temperature 0, and CosyVoice2-0.5B for TTS.
+
+A flow-matching TTS would make a second column here, and the asymmetry is the reason to want one: an autoregressive codec LM emits acoustic tokens as it goes, so audio starts mid-chunk, while a flow matching model solves the whole chunk at once and cannot start early at all. F5-TTS is in `bench/stages.py` but has no config and has never run. Adding it back is one config file plus the install.
 
 ## Three processes, three GPUs
 
