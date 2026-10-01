@@ -3,6 +3,9 @@
 name: moshi
 system: moshi
 
+# One model on one card.
+gpu: A100-40GB
+
 manifest: data/manifest.jsonl
 clips_dir: data/clips
 trials: 4
@@ -20,4 +23,12 @@ devices:
 model:
   backend: kyutai
   repo: kyutai/moshiko-pytorch-bf16
+  codebooks: 8
+  # A frame counts as speech above this. Mimi's silence reads under 0.003 and
+  # its speech over 0.02, with two empty decades between, so the value only has
+  # to land in the gap. See research/moshi-profile.md for the distribution.
+  rms_speech: 0.01
+  # The reply is over once Moshi has been quiet this long. Measured on speech
+  # frames, not on frames arriving: those never stop.
+  silence_gap_s: 1.5
   max_response_s: 20

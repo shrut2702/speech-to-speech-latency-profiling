@@ -19,13 +19,18 @@ crash keeps what already finished.
 
 import subprocess
 import sys
+from pathlib import Path
 
 import modal
 
 # One card per stage. A100 40GB rather than A10G: Moshi needs ~16GB in bf16 and
 # would not fit otherwise, and pinning the same class across every reported run
 # matters more than picking the cheapest one that fits this config.
-GPU = "A100-40GB:3"   # asr, llm, tts
+# Modal fixes the GPU request on the function, so it cannot be read from a
+# config at call time. There is one function per shape instead, and each config
+# names the shape it wants with a top-level `gpu:` key. Adding a shape means
+# adding a function below and an entry in RUNNERS.
+DEFAULT_GPU = "A100-40GB:3"   # the cascade: asr, llm, tts on a card each
 TIMEOUT_S = 12 * 3600
 
 ALL_CONFIGS = [
@@ -82,6 +87,9 @@ image = (
     # whisper_streaming's whisper_online.py imports librosa at module scope,
     # only to resample. Its own layer so adding it does not re-resolve vLLM.
     .pip_install("librosa>=0.10.2")
+    # Moshi runs in the harness process, not a stage worker, so it shares
+    # the base environment with vLLM. It pins nothing hard, so no venv.
+    .pip_install("moshi>=0.2")
     # CosyVoice's requirements and vLLM's pull different nvidia-cudnn-cu12
     # versions, leaving two libcudnn.so.x side by side. Nothing notices until
     # vLLM probes FlashInfer while choosing an attention backend, whose import
@@ -142,18 +150,28 @@ image = (
 )
 
 
-@app.function(
-    gpu=GPU,
+CONTAINER = dict(
     image=image,
     volumes={"/cache": models, "/results": results},
     timeout=TIMEOUT_S,
     secrets=[modal.Secret.from_name("huggingface")],
 )
-def run_bench(
-    configs: list[str],
-    trials: int = 0,
-    max_clips: int = 0,
-) -> list[str]:
+
+
+@app.function(gpu="A100-40GB:3", **CONTAINER)
+def run_3x(configs: list[str], trials: int = 0, max_clips: int = 0) -> list[str]:
+    return _run(configs, trials, max_clips)
+
+
+@app.function(gpu="A100-40GB", **CONTAINER)
+def run_1x(configs: list[str], trials: int = 0, max_clips: int = 0) -> list[str]:
+    return _run(configs, trials, max_clips)
+
+
+RUNNERS = {"A100-40GB:3": run_3x, "A100-40GB": run_1x}
+
+
+def _run(configs: list[str], trials: int, max_clips: int) -> list[str]:
     written = []
     for name in configs:
         print(f"\n=== {name}", flush=True)
@@ -204,5 +222,27 @@ def main(
     unknown = set(names) - set(ALL_CONFIGS)
     if unknown:
         raise SystemExit(f"unknown configs: {sorted(unknown)}")
-    print("\n".join(run_bench.remote(names, trials=trials, max_clips=max_clips)))
+
+    # One container per GPU shape, taken from each config's own `gpu:` key.
+    # Configs that want the same hardware share a container and the cold start
+    # that comes with it.
+    import yaml
+
+    groups: dict[str, list[str]] = {}
+    for name in names:
+        cfg = yaml.safe_load(
+            Path(f"configs/{name}.yaml").read_text(encoding="utf-8")
+        )
+        groups.setdefault(cfg.get("gpu", DEFAULT_GPU), []).append(name)
+
+    missing = set(groups) - set(RUNNERS)
+    if missing:
+        raise SystemExit(
+            f"no function requests {sorted(missing)}; add one next to run_3x "
+            f"and register it in RUNNERS. Known: {sorted(RUNNERS)}"
+        )
+
+    for gpu, group in groups.items():
+        print(f"\n=== {gpu}: {', '.join(group)}", flush=True)
+        print("\n".join(RUNNERS[gpu].remote(group, trials=trials, max_clips=max_clips)))
     print(report.remote(names))

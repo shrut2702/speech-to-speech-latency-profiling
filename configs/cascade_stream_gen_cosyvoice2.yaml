@@ -5,6 +5,9 @@ name: cascade_stream_gen_cosyvoice2
 system: cascade
 path: stream_gen
 
+# A card per stage, so they overlap instead of taking turns.
+gpu: A100-40GB:3
+
 manifest: data/manifest.jsonl
 clips_dir: data/clips
 trials: 4

@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from typing import AsyncIterator, Protocol
 
 import numpy as np
@@ -613,6 +614,136 @@ class MockTTS:
 
 
 # --------------------------------------------------------------------------
+# Full duplex
+# --------------------------------------------------------------------------
+
+class MoshiStage:
+    """Moshi behind the same worker protocol as the cascade's stages.
+
+    One 80ms frame in, one token and one 80ms frame out. It lives in a worker
+    process for the same reason the cascade's stages do: so the harness process
+    is doing nothing but feeding and tracing in both systems. In-process, Mimi
+    and the LM would hold the interpreter lock the feeder needs to release
+    frames on time, and that delay would land in Moshi's own numbers.
+
+    Deciding what counts as speech is not done here. The stage reports the
+    token and the audio; the thresholds live with the metrics.
+    """
+
+    family = "duplex"
+    SR = 24000
+    FRAME = 1920  # 80ms
+
+    def __init__(self, cfg: dict, device: str = "cuda"):
+        self.repo = cfg.get("repo", "kyutai/moshiko-pytorch-bf16")
+        self.n_codebooks = int(cfg.get("codebooks", 8))
+        self.device = device
+        self.mimi = None
+        self.lm = None
+        self.gen = None
+        self.text_tok = None
+
+    async def load(self) -> None:
+        import torch
+        from moshi.models import LMGen, loaders
+
+        self.torch = torch
+        ckpt = loaders.CheckpointInfo.from_hf_repo(self.repo)
+        self.mimi = ckpt.get_mimi(device=self.device)
+        self.mimi.set_num_codebooks(self.n_codebooks)
+        self.lm = ckpt.get_moshi(device=self.device)
+        try:
+            self.text_tok = ckpt.get_text_tokenizer()
+        except Exception:  # noqa: BLE001
+            self.text_tok = None
+
+        # Streaming opens once and stays open. The state lives on lm and mimi
+        # rather than on LMGen, so a second LMGen does not give a clean model:
+        # its _init_streaming_state calls lm.streaming() and asserts something
+        # is already streaming. reset() is the way back, once per trial.
+        self.gen = LMGen(self.lm, temp=0.0, temp_text=0.0)
+        self.gen.streaming_forever(1)
+        self.mimi.streaming_forever(1)
+
+    async def warmup(self) -> float:
+        """Returns the real-time factor, measured on silence.
+
+        Above 1.0 Moshi cannot keep pace with the audio it is fed, and every
+        number after that describes the GPU rather than the architecture.
+        """
+        silence = np.zeros(self.FRAME, dtype=np.float32)
+        for _ in range(2):
+            self.reset()
+            for _ in range(int(1.0 * self.SR / self.FRAME)):
+                self.step(silence)
+
+        self.reset()
+        audio_s = 4.0
+        t0 = time.monotonic()
+        for _ in range(int(audio_s * self.SR / self.FRAME)):
+            self.step(silence)
+        return (time.monotonic() - t0) / audio_s
+
+    def reset(self) -> None:
+        """Clears the KV cache and the codec state between trials.
+
+        Without it every trial after the first answers with the previous clip
+        still in context.
+        """
+        self.gen.reset_streaming()
+        self.mimi.reset_streaming()
+
+    def step(self, frame: np.ndarray):
+        """(text token, its piece, 80ms of audio). None if nothing came out."""
+        with self.torch.no_grad():
+            x = self.torch.from_numpy(frame).to(self.device)[None, None, :]
+            tokens = self.gen.step(self.mimi.encode(x))
+            if tokens is None:
+                return None
+            # Column 0 is the inner monologue; the audio codebooks follow.
+            tok = int(tokens[0, 0, 0].item())
+            audio = self.mimi.decode(tokens[:, 1:]).cpu().numpy().reshape(-1)
+        return tok, self._piece(tok), audio
+
+    def _piece(self, tok: int) -> str:
+        if self.text_tok is None:
+            return ""
+        try:
+            return self.text_tok.id_to_piece(tok)
+        except Exception:  # noqa: BLE001
+            return ""
+
+
+class MockMoshi:
+    """Known delays, no model. Speaks for a fixed window, then stops."""
+
+    family = "duplex"
+    SR = 24000
+    FRAME = 1920
+
+    def __init__(self, cfg: dict, device: str = "cpu"):
+        self.start_s = float(cfg.get("mock_start_s", 2.0))
+        self.response_s = float(cfg.get("mock_response_s", 4.0))
+        self.elapsed_s = 0.0
+
+    async def load(self) -> None:
+        return None
+
+    async def warmup(self) -> float:
+        return 0.1
+
+    def reset(self) -> None:
+        self.elapsed_s = 0.0
+
+    def step(self, frame: np.ndarray):
+        self.elapsed_s += self.FRAME / self.SR
+        talking = self.start_s <= self.elapsed_s <= self.start_s + self.response_s
+        if talking:
+            return 99, "word", np.full(self.FRAME, 0.05, dtype=np.float32)
+        return 3, "<pad>", np.zeros(self.FRAME, dtype=np.float32)
+
+
+# --------------------------------------------------------------------------
 # Registry
 # --------------------------------------------------------------------------
 
@@ -623,6 +754,7 @@ ASR_BACKENDS = {
 }
 LLM_BACKENDS = {"vllm": VLLMEngine, "mock": MockLLM}
 TTS_BACKENDS = {"cosyvoice2": CosyVoice2TTS, "f5": F5TTS, "mock": MockTTS}
+MOSHI_BACKENDS = {"kyutai": MoshiStage, "mock": MockMoshi}
 
 
 def build(kind: str, cfg: dict, devices: dict):
@@ -632,7 +764,10 @@ def build(kind: str, cfg: dict, devices: dict):
     into every trace, so a one-GPU run and a three-GPU run can never be
     compared by accident.
     """
-    table = {"asr": ASR_BACKENDS, "llm": LLM_BACKENDS, "tts": TTS_BACKENDS}[kind]
+    table = {
+        "asr": ASR_BACKENDS, "llm": LLM_BACKENDS, "tts": TTS_BACKENDS,
+        "moshi": MOSHI_BACKENDS,
+    }[kind]
     name = cfg.get("backend", "mock")
     if name not in table:
         raise ValueError(f"{kind} backend must be one of {sorted(table)}")

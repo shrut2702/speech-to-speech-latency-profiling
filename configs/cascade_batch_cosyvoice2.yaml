@@ -4,6 +4,9 @@ name: cascade_batch_cosyvoice2
 system: cascade
 path: batch
 
+# A card per stage, so they overlap instead of taking turns.
+gpu: A100-40GB:3
+
 manifest: data/manifest.jsonl
 clips_dir: data/clips
 # Four per clip. Enough for a median that is not one unlucky run.

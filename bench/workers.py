@@ -42,41 +42,35 @@ def _serve(kind: str, cfg: dict, gpu: int | None, requests, replies, events) -> 
     if gpu is not None:
         os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu)
 
-    # When spawned with a separate venv executable, multiprocessing spawn
-    # overwrites sys.path with the parent process's sys.path, stripping the
-    # child venv's own site-packages. Re-add the venv's site-packages and place
-    # them ahead of the parent's site-packages so the venv's dependencies take
-    # precedence.
+    # Only when the stage asked for its own interpreter. Spawn overwrites
+    # sys.path with the parent's, which strips the child venv's site-packages,
+    # so they go back on ahead of anything inherited and foreign site-packages
+    # come off. Doing this unconditionally would evict numpy from a worker that
+    # shares the parent's environment, and numpy's extension modules cannot be
+    # imported twice in one process.
     venv_python = cfg.get("venv_python", "")
-    prefix = sys.prefix if sys.prefix != sys.base_prefix else (
-        os.path.dirname(os.path.dirname(os.path.abspath(venv_python))) if venv_python else None
-    )
-    if prefix:
+    if venv_python:
         import site
-        sp_dirs = []
-        if hasattr(site, "getsitepackages"):
-            sp_dirs.extend(site.getsitepackages([prefix]))
+
+        prefix = sys.prefix if sys.prefix != sys.base_prefix else os.path.dirname(
+            os.path.dirname(os.path.abspath(venv_python))
+        )
         py_ver = f"python{sys.version_info.major}.{sys.version_info.minor}"
-        sp_dirs.append(os.path.join(prefix, "lib", py_ver, "site-packages"))
-        sp_dirs.append(os.path.join(prefix, "Lib", "site-packages"))
-        for sp in sp_dirs:
+        for sp in [
+            *(site.getsitepackages([prefix]) if hasattr(site, "getsitepackages") else []),
+            os.path.join(prefix, "lib", py_ver, "site-packages"),
+            os.path.join(prefix, "Lib", "site-packages"),
+        ]:
             if os.path.isdir(sp):
                 site.addsitedir(sp)
-        venv_paths = [p for p in sys.path if p.startswith(prefix)]
-        # Filter out ANY site-packages that do not belong to this venv
-        other_paths = [
-            p for p in sys.path 
-            if not p.startswith(prefix) 
-            and "site-packages" not in p
+        sys.path[:] = [p for p in sys.path if p.startswith(prefix)] + [
+            p for p in sys.path
+            if not p.startswith(prefix) and "site-packages" not in p
         ]
-        sys.path[:] = venv_paths + other_paths
-        
-        # DEBUG/FIX: If any modules leaked during the `spawn` unpickling phase
-        # before we scrubbed sys.path, they must be evicted so they can be
-        # correctly re-imported from the scrubbed venv path!
-        import sys
-        for mod in list(sys.modules.keys()):
-            if mod.startswith("numpy") or mod.startswith("torch"):
+        # Anything that leaked in during spawn's bootstrap came from the
+        # parent's environment and has to go, so the venv's own copy loads.
+        for mod in list(sys.modules):
+            if mod.startswith(("numpy", "torch")):
                 del sys.modules[mod]
 
     print(f"[{kind}] worker started, executable={sys.executable}", flush=True)
@@ -100,8 +94,10 @@ async def _serve_async(kind: str, cfg: dict, requests, replies, events) -> None:
 
         try:
             if op == "warmup":
-                await stage.warmup()
-                replies.put(("done", None))
+                # Whatever warmup returns comes back with it. Moshi measures
+                # its real-time factor here and the harness refuses to trust a
+                # run where that is at or above 1.0.
+                replies.put(("done", await stage.warmup()))
 
             elif op == "asr_open":
                 session = stage.new_session()
@@ -118,6 +114,15 @@ async def _serve_async(kind: str, cfg: dict, requests, replies, events) -> None:
 
             elif op == "asr_final":
                 replies.put(("done", await session.final()))
+
+            elif op == "moshi_reset":
+                stage.reset()
+                replies.put(("done", None))
+
+            elif op == "moshi_step":
+                # One 80ms frame in, one out. A round trip per frame at 12.5Hz
+                # is nothing next to the 50Hz the ASR takes fire and forget.
+                replies.put(("done", stage.step(payload)))
 
             elif op == "llm":
                 n = 0
