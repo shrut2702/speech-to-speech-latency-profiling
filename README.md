@@ -4,7 +4,7 @@ Measures where the milliseconds go between a person finishing their sentence and
 
 Audio is fed at wall clock pace in 20ms frames, the way a microphone delivers it. `t = 0` is the annotated end of speech carried in the manifest, so it is a property of the audio file rather than of any system, and it is identical across configs and runs. A production deployment adds 200 to 700ms of endpointing on top of every number here.
 
-Status: all three cascade configs have run on Modal. Moshi is not wired up yet.
+Status: all four configs have run on Modal over the full clip set.
 
 ## Configs
 
@@ -24,15 +24,17 @@ A flow-matching TTS would make a second column here, and the asymmetry is the re
 
 ## Results
 
-45 clips, 4 trials each, A100-40GB per stage. Milliseconds from the end of
-speech, p50 / p95.
+45 clips, 4 trials each, A100-40GB. Milliseconds from the end of speech,
+p50 / p95.
 
-| | batch | stream_gen | stream_all |
-|---|---|---|---|
-| time to first audio | 11892 / 17454 | **2717 / 3715** | 2947 / 4298 |
-| end to end | 11893 / 17456 | 12915 / 22058 | 13592 / 22700 |
-| asr final | 129 / 167 | 110 / 161 | **4** / 672 |
-| llm first token | 157 / 198 | 136 / 187 | 31 / 702 |
+| | batch | stream_gen | stream_all | moshi |
+|---|---|---|---|---|
+| time to first audio | 11892 / 17454 | 2717 / 3715 | 2947 / 4298 | **145 / 319** |
+| end to end | 11893 / 17456 | 12915 / 22058 | 13592 / 22700 | 3413 / 11947 |
+| asr final | 129 / 167 | 110 / 161 | 4 / 672 | n/a |
+| llm first token | 157 / 198 | 136 / 187 | 31 / 702 | n/a |
+| GPUs per session | 3 | 3 | 3 | **1** |
+| trials with a reply | 180/180 | 180/180 | 180/180 | 160/180 |
 
 Stage costs on their own clock, with everything before them subtracted out:
 
@@ -56,6 +58,23 @@ finalize drops from 110ms to 4ms at p50, which is the whole point of
 `stream_all` and is real. It is also invisible next to 2.7 seconds of TTS. Time
 to first audio comes out slightly worse, 2947 against 2717, partly because
 whisper-streaming produces a different transcript.
+
+**Moshi answers 19x faster than the best cascade, on a third of the hardware,
+and sometimes does not answer at all.** 145ms against 2717ms, one card against
+three. It has no transcript to wait for and no text to hand to a vocoder. By
+the time the user stops talking it is already producing audio tokens, so the
+reply is a continuation rather than something started from scratch.
+
+The cost is in the last row. On five of the 45 clips, all four trials, Moshi
+spoke *during* the question and had nothing left once it ended. Those trials
+produced no audio after the endpoint and are counted as failures rather than
+quietly dropped, which is why its column is 160 of 180. All five are short
+MLCpro questions of about 2.2s, and it started talking 1.5 to 1.8s before they
+finished.
+
+So the comparison is not one number against another. The cascade is slow,
+predictable, and always answers. Moshi is fast, cheap to host, and now and then
+talks over you instead of replying.
 
 Per-config detail, including real time factor, gaps and underruns, is in
 `results/<config>/report.md`, regenerated from the traces by
