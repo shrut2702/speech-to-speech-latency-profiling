@@ -61,6 +61,27 @@ def save_audio(root: Path, trace: Trace, chunks: list) -> None:
     sf.write(out / "full.wav", np.concatenate([c.samples for c in chunks]), sr)
 
 
+def save_session_audio(root: Path, trace: Trace) -> None:
+    """Writes Moshi's complete decoded output as session.wav.
+
+    full.wav contains only the post-endpoint response chunks. session.wav
+    contains every frame Moshi decoded from the start of the clip to the end,
+    including early speech (talking over the user) and silence. Useful for
+    auditing what the model actually did without re-running the trial.
+
+    The artifact is popped so the raw numpy array is not serialized into the
+    JSONL trace.
+    """
+    pair = trace.artifacts.pop("session_audio", None)
+    if pair is None:
+        return
+    import soundfile as sf
+    samples, sr = pair
+    out = root / trace.clip_id / f"trial{trace.trial}"
+    out.mkdir(parents=True, exist_ok=True)
+    sf.write(out / "session.wav", samples, sr)
+
+
 def build_system(cfg: dict) -> S2SSystem:
     kind = cfg["system"]
     if kind == "cascade":
@@ -155,6 +176,7 @@ async def _run_trials(system, cfg, manifest, out_path, env, frame_ms,
             # the inter-chunk gaps.
             if audio_dir is not None:
                 save_audio(audio_dir, trace, produced)
+                save_session_audio(audio_dir, trace)
             writer.write(trace)
             print(f"{cfg['name']} {row['id']} trial {trial + 1}/{trials}")
 

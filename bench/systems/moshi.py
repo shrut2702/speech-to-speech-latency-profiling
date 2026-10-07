@@ -124,6 +124,10 @@ class MoshiSystem(S2SSystem):
         early_said: list[str] = []
         said: list[str] = []
         pending: list[tuple[float, AudioChunk]] = []
+        # Every decoded frame, regardless of whether it is early, quiet, or
+        # part of the response.  Saved as session.wav so the full session
+        # can be audited without re-running the trial.
+        session_audio: list[np.ndarray] = []
 
         # Past the endpoint, not stopping at it. A full-duplex model never stops
         # listening and can only keep generating while frames keep arriving, so
@@ -139,6 +143,7 @@ class MoshiSystem(S2SSystem):
                 tok, piece, out = result
                 if out is None or not len(out):
                     continue
+                session_audio.append(out)
 
                 now = time.monotonic()
                 loud = float(np.sqrt(np.mean(out ** 2))) >= self.rms_speech
@@ -215,6 +220,10 @@ class MoshiSystem(S2SSystem):
         # thing to score against reference_answer, the same as the cascade's
         # LLM response.
         trace.artifacts["response"] = "".join(said).replace("▁", " ").strip()
+        if session_audio:
+            trace.artifacts["session_audio"] = (
+                np.concatenate(session_audio), self.out_sr
+            )
         if early and feeder.t_endpoint is not None:
             trace.artifacts["early_speech_ms"] = [
                 round((t - feeder.t_endpoint) * 1000) for t in early
