@@ -152,16 +152,10 @@ between pieces and was generating longer sequences than the model normally sees.
 Each of those made the rebuild look faster than it is. The numbers above are
 after all three were fixed.
 
-## Two bugs worth reporting upstream
+## One more thing worth reporting upstream
 
-Both are visible in the shipped pipeline's own output and neither needs extra
-hardware to fix.
-
-**`token_hop_len` is never reset.** `CosyVoice2Model.tts` grows it in place and
-leaves it there, so the next utterance starts wherever the last one finished. In
-the long-paragraph run, piece two's first chunk is 109 tokens instead of 34,
-because piece one left the hop at 100. Time to first audio is four times worse
-on every utterance after the first.
+Visible in the shipped pipeline's own output, and it needs no extra hardware to
+fix.
 
 **Consecutive pieces are strictly sequential.** Piece two's LM does not start
 until piece one's decoder has finished. That is 3.5 seconds of idle LM in the
