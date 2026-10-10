@@ -220,20 +220,20 @@ def synth(
 def main(
     # Three sentences, so streaming has something to chunk. One sentence yields
     # a single piece and tells you nothing about how the chunks arrive.
-    # text: str = (
-    #     "The capital of France is Paris. "
-    #     "It has been the seat of government since the tenth century. "
-    #     "Today it is home to just over two million people."
-    # ),
     text: str = (
-         "Photosynthesis converts light energy into chemical energy. "
-         "Plants absorb sunlight through chlorophyll in their leaves, "
-         "then use that energy to combine carbon dioxide from the air with water drawn up from the roots. "
-         "The result is glucose, which the plant uses for growth, and oxygen, "
-         "which is released back into the atmosphere. "
-         "Almost every food chain on the planet starts with this reaction, "
-         "which is why a change in plant cover affects far more than the plants themselves."
+        "The capital of France is Paris. "
+        "It has been the seat of government since the tenth century. "
+        "Today it is home to just over two million people."
     ),
+    # text: str = (
+    #      "Photosynthesis converts light energy into chemical energy. "
+    #      "Plants absorb sunlight through chlorophyll in their leaves, "
+    #      "then use that energy to combine carbon dioxide from the air with water drawn up from the roots. "
+    #      "The result is glucose, which the plant uses for growth, and oxygen, "
+    #      "which is released back into the atmosphere. "
+    #      "Almost every food chain on the planet starts with this reaction, "
+    #      "which is why a change in plant cover affects far more than the plants themselves."
+    # ),
     stream: bool = False,
     # Defaults to the repo's own asset so this runs with no setup. That speaker
     # is Chinese, so English text goes through the cross-lingual path and picks
