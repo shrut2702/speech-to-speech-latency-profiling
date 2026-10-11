@@ -29,8 +29,8 @@ p50 / p95.
 
 | | batch | stream_gen | stream_all | moshi |
 |---|---|---|---|---|
-| time to first audio | 11892 / 17454 | 2717 / 3715 | 2947 / 4298 | **145 / 319** |
-| end to end | 11893 / 17456 | 12915 / 22058 | 13592 / 22700 | 3413 / 11947 |
+| time to first audio | 11892 / 17454 | 2717 / 3715 | 2947 / 4298 | **144 / 318** |
+| end to end | 11893 / 17456 | 12915 / 22058 | 13592 / 22700 | 3413 / 11948 |
 | asr final | 129 / 167 | 110 / 161 | 4 / 672 | n/a |
 | llm first token | 157 / 198 | 136 / 187 | 31 / 702 | n/a |
 | GPUs per session | 3 | 3 | 3 | **1** |
@@ -60,17 +60,27 @@ to first audio comes out slightly worse, 2947 against 2717, partly because
 whisper-streaming produces a different transcript.
 
 **Moshi answers 19x faster than the best cascade, on a third of the hardware,
-and sometimes does not answer at all.** 145ms against 2717ms, one card against
+and sometimes does not answer at all.** 144ms against 2717ms, one card against
 three. It has no transcript to wait for and no text to hand to a vocoder. By
 the time the user stops talking it is already producing audio tokens, so the
 reply is a continuation rather than something started from scratch.
 
 The cost is in the last row. On five of the 45 clips, all four trials, Moshi
-spoke *during* the question and had nothing left once it ended. Those trials
-produced no audio after the endpoint and are counted as failures rather than
-quietly dropped, which is why its column is 160 of 180. All five are short
-MLCpro questions of about 2.2s, and it started talking 1.5 to 1.8s before they
-finished.
+produced no audio after the endpoint. Those trials are counted as failures
+rather than quietly dropped, which is why its column is 160 of 180. On four of
+the five it said only a greeting, *during* the question, and never replied. On
+the fifth it did answer, but the whole answer came before the question had
+ended. All five are MLCpro questions.
+
+A reply is not always a whole one. Among the 160 trials that did answer, 11 of
+the 40 clips have a response that was only partly generated, all of them GSM8K
+word problems. An earlier run stopped the feeder once the response had been
+silent for 1.5s, and that looked like the reason some replies ended midway. The
+feeder now plays out its full 20s of silence and the outcome did not change, so
+it is Moshi that stops there.
+
+Some of the complete replies are also wrong, which shows the limits of Moshi's
+reasoning and is separate from its latency.
 
 So the comparison is not one number against another. The cascade is slow,
 predictable, and always answers. Moshi is fast, cheap to host, and now and then

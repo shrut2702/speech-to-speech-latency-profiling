@@ -3,7 +3,7 @@
 
 | config | n | time to first audio p50/p95 | end to end p50/p95 | asr final p50/p95 | llm first token p50/p95 | tts first chunk p50/p95 |
 |---|---|---|---|---|---|---|
-| moshi | 160 | 145 / 319 | 3413 / 11947 | - | - | - |
+| moshi | 160 | 144 / 318 | 3413 / 11948 | - | - | - |
 
 ## Time to first audio by length bucket
 
@@ -15,4 +15,4 @@
 
 | config | rtf p95 | max gap p95 ms | underruns | failed trials |
 |---|---|---|---|---|
-| moshi | 1.00 | 4 | 0 | 20 |
+| moshi | 1.00 | 2 | 0 | 20 |
