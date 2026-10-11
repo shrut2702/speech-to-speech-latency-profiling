@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 from bench.feeder import AudioFeeder
+from bench.systems.base import paced
 from bench.trace import Trace, FEEDER_ENDPOINT
 
 
@@ -119,6 +120,29 @@ def test_consumer_can_end_the_stream_early():
 
     elapsed = asyncio.run(run())
     assert elapsed < 1.0, f"took {elapsed:.2f}s; generator did not close"
+
+
+def test_slow_reader_does_not_hold_the_feeder():
+    """A reader that waits on a model between frames must not make the feeder
+    late. Read directly it does, which is the case `paced` exists for."""
+
+    async def run(source):
+        feeder = make_feeder(seconds=1.0, endpoint_s=0.6, silence_after_s=0.0)
+        trace = Trace(clip_id="t", config="t", trial=0)
+        seen = []
+        async for frame in source(feeder, trace):
+            seen.append(frame.index)
+            if len(seen) % 4 == 0:
+                await asyncio.sleep(0.15)  # a model step, far longer than a frame
+        return feeder.max_lag, seen, trace
+
+    direct_lag, _, _ = asyncio.run(run(lambda f, t: f.stream(t)))
+    assert direct_lag > 0.1, f"expected the reader to hold it, lag {direct_lag:.3f}s"
+
+    lag, seen, trace = asyncio.run(run(paced))
+    assert lag < 0.05, f"feeder lagged {lag * 1000:.0f}ms behind a slow reader"
+    assert seen == list(range(50)), "every frame, in order"
+    assert trace.artifacts["feeder_backlog_ms"] >= 100
 
 
 def test_rejects_bad_endpoint():

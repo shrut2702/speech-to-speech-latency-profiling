@@ -43,7 +43,7 @@ import numpy as np
 from ..feeder import AudioFeeder
 from ..trace import Trace, OUTPUT_FIRST_AUDIO, OUTPUT_CHUNK, OUTPUT_END
 from ..workers import StageWorker
-from .base import AudioChunk, S2SSystem
+from .base import AudioChunk, S2SSystem, paced
 
 MIMI_SR = 24000
 MIMI_FRAME = 1920  # 80ms at 24kHz
@@ -64,10 +64,10 @@ class MoshiSystem(S2SSystem):
         # research/moshi-profile.md has the distribution it came from.
         self.rms_speech = float(model.get("rms_speech", 0.01))
         # The feeder pads a long tail of silence because a microphone does not
-        # switch off while the user waits. Feeding all of it every trial would
-        # cost those seconds for nothing, so the turn ends when the model stops
-        # talking. Both bounds are measured from the endpoint.
-        self.silence_gap_s = float(model.get("silence_gap_s", 1.5))
+        # switch off while the user waits, and all of it is fed. The response
+        # ends when the model stops talking; the stream does not. Both bounds
+        # are measured from the endpoint.
+        self.silence_gap_s = float(model.get("silence_gap_s", 4.0))
         self.max_response_s = float(model.get("max_response_s", 20.0))
         self.out_sr = MIMI_SR
         self.rtf: float | None = None
@@ -123,6 +123,10 @@ class MoshiSystem(S2SSystem):
         early: list[float] = []
         early_said: list[str] = []
         said: list[str] = []
+        # Set once the response is over. The stream runs on after it.
+        done = False
+        late: list[float] = []
+        late_said: list[str] = []
         pending: list[tuple[float, AudioChunk]] = []
         # Every decoded frame, regardless of whether it is early, quiet, or
         # part of the response.  Saved as session.wav so the full session
@@ -132,7 +136,10 @@ class MoshiSystem(S2SSystem):
         # Past the endpoint, not stopping at it. A full-duplex model never stops
         # listening and can only keep generating while frames keep arriving, so
         # cutting the input early would starve it mid-sentence.
-        async for frame in feeder.stream(trace):
+        #
+        # Paced, because this loop waits on a step every fourth frame and the
+        # feeder must not wait with it.
+        async for frame in paced(feeder, trace):
             buffer = np.concatenate([buffer, self._to_mimi(frame.samples, feeder.sr)])
 
             while len(buffer) >= MIMI_FRAME:
@@ -147,6 +154,17 @@ class MoshiSystem(S2SSystem):
 
                 now = time.monotonic()
                 loud = float(np.sqrt(np.mean(out ** 2))) >= self.rms_speech
+
+                if done:
+                    # The response is measured and closed, but the mic stays
+                    # on, so Moshi keeps generating. Anything it says from here
+                    # is recorded and never counted.
+                    if loud:
+                        late.append(now)
+                        if self._is_word(piece):
+                            late_said.append(piece)
+                    continue
+
                 past_endpoint = (
                     feeder.t_endpoint is not None and now >= feeder.t_endpoint
                 )
@@ -193,29 +211,19 @@ class MoshiSystem(S2SSystem):
                 trace.mark(OUTPUT_CHUNK, duration_s=chunk.duration_s)
                 yield chunk
 
-            if self._turn_over(feeder, last_speech):
-                break
+            # Not a break. The feeder plays out its whole silence budget so the
+            # session is the same length every trial and Moshi is never cut off
+            # mid-stream; only the response is closed here.
+            if not done and self._turn_over(feeder, last_speech):
+                done = True
+                for tail in self._close(trace, pending, last_speech):
+                    yield tail
+                pending = []
 
-        # Two held frames go out after all, so the audio ends where the
-        # measurement says it does. A word's last syllable decays below the
-        # threshold before it has finished being heard, so cutting at the last
-        # loud frame clips the end of the reply.
-        if last_speech is not None:
-            for t_arrived, tail in pending[:TAIL_FRAMES]:
-                trace.mark_at(OUTPUT_CHUNK, t_arrived, duration_s=tail.duration_s)
+        # The feeder ran out before the turn did.
+        if not done:
+            for tail in self._close(trace, pending, last_speech):
                 yield tail
-
-        # The response ends where the audio does, not where the loop does. The
-        # loop runs on for silence_gap_s after that, waiting to find out
-        # whether the reply is over. The last loud frame's own 80ms, plus the
-        # tail frames just yielded.
-        if last_speech is not None:
-            trace.mark_at(
-                OUTPUT_END,
-                last_speech + (1 + TAIL_FRAMES) * MIMI_FRAME / MIMI_SR,
-            )
-        else:
-            trace.mark(OUTPUT_END)
         # Moshi's inner monologue is its answer in text, which makes it the
         # thing to score against reference_answer, the same as the cascade's
         # LLM response.
@@ -231,6 +239,43 @@ class MoshiSystem(S2SSystem):
             trace.artifacts["early_response"] = (
                 "".join(early_said).replace("▁", " ").strip()
             )
+        if late and feeder.t_endpoint is not None:
+            trace.artifacts["late_speech_ms"] = [
+                round((t - feeder.t_endpoint) * 1000) for t in late
+            ]
+            trace.artifacts["late_response"] = (
+                "".join(late_said).replace("▁", " ").strip()
+            )
+
+    def _close(
+        self,
+        trace: Trace,
+        pending: list[tuple[float, AudioChunk]],
+        last_speech: float | None,
+    ) -> list[AudioChunk]:
+        """Ends the response and returns the tail frames still to go out.
+
+        A few held frames go out after all, so the audio ends where the
+        measurement says it does. A word's last syllable decays below the
+        threshold before it has finished being heard, so cutting at the last
+        loud frame clips the end of the reply.
+        """
+        if last_speech is None:
+            trace.mark(OUTPUT_END)
+            return []
+        tails = []
+        for t_arrived, tail in pending[:TAIL_FRAMES]:
+            trace.mark_at(OUTPUT_CHUNK, t_arrived, duration_s=tail.duration_s)
+            tails.append(tail)
+        # The response ends where the audio does, not where the turn was
+        # called. That happens silence_gap_s later, once the quiet has lasted
+        # long enough to be sure. The last loud frame's own 80ms, plus the
+        # tail frames.
+        trace.mark_at(
+            OUTPUT_END,
+            last_speech + (1 + TAIL_FRAMES) * MIMI_FRAME / MIMI_SR,
+        )
+        return tails
 
     def _to_mimi(self, samples: np.ndarray, sr: int) -> np.ndarray:
         if sr == MIMI_SR:

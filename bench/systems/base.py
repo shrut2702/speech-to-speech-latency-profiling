@@ -66,6 +66,43 @@ async def stop_drain(task: asyncio.Task) -> None:
         pass
 
 
+async def paced(feeder: AudioFeeder, trace: Trace) -> AsyncIterator[Frame]:
+    """The feeder's frames, released on the feeder's clock and not the reader's.
+
+    Iterating the feeder directly ties the two together: a generator only
+    produces its next frame when asked, so a reader that awaits a model between
+    frames holds the microphone still while it does. The frame after is then
+    late, and it reads as the host failing to feed in real time when the host
+    was fine.
+
+    Here the feeder runs as its own task and leaves frames in a queue, the way
+    a microphone fills a buffer whether or not anyone is reading it. A slow
+    reader now shows up as a backlog, which is recorded, and the feeder's lag
+    is left meaning only what it claims to.
+    """
+    frames: asyncio.Queue = asyncio.Queue()
+
+    async def feed() -> None:
+        try:
+            async for frame in feeder.stream(trace):
+                frames.put_nowait(frame)
+        finally:
+            frames.put_nowait(None)
+
+    task = asyncio.create_task(feed())
+    backlog = 0
+    try:
+        while (frame := await frames.get()) is not None:
+            # Frames already waiting behind this one.
+            backlog = max(backlog, frames.qsize())
+            yield frame
+    finally:
+        await stop_drain(task)
+        trace.artifacts["feeder_backlog_ms"] = round(
+            backlog * feeder.frame_len / feeder.sr * 1000
+        )
+
+
 @dataclass
 class AudioChunk:
     samples: np.ndarray
